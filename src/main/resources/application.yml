@@ -1,0 +1,47 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: order-service
+
+  datasource:
+    url: jdbc:mysql://localhost:3306/demo_order?useSSL=false&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: 15152697858.*Twj                 # ← 改成你的密码
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 3
+
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+    listener:
+      simple:
+        acknowledge-mode: manual      # 手动ACK：消费成功才确认，失败重新入队
+        retry:
+          enabled: true
+          max-attempts: 3             # 最多重试3次
+          initial-interval: 2000      # 第一次重试等2秒
+          multiplier: 2               # 指数退避：2s → 4s → 8s
+          max-interval: 10000         # 最长等10秒
+        default-requeue-rejected: false  # 超过重试次数后不再重入队，转死信队列
+
+  cloud:
+    nacos:
+      discovery:
+        server-addr: localhost:8848
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+logging:
+  level:
+    com.demo.order: DEBUG
+    org.springframework.amqp: INFO
