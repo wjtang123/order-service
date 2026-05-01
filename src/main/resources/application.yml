@@ -19,16 +19,6 @@ spring:
     port: 5672
     username: guest
     password: guest
-    listener:
-      simple:
-        acknowledge-mode: manual      # 手动ACK：消费成功才确认，失败重新入队
-        retry:
-          enabled: true
-          max-attempts: 3             # 最多重试3次
-          initial-interval: 2000      # 第一次重试等2秒
-          multiplier: 2               # 指数退避：2s → 4s → 8s
-          max-interval: 10000         # 最长等10秒
-        default-requeue-rejected: false  # 超过重试次数后不再重入队，转死信队列
 
   cloud:
     nacos:

@@ -12,18 +12,16 @@ import org.springframework.stereotype.Component;
 /**
  * 库存扣减事件消费者
  *
- * 关键配置（在 application.yml 里）：
- *   acknowledge-mode: manual  → 手动 ACK
- *   retry.enabled: true       → 消费失败自动重试
- *   default-requeue-rejected: false → 超过重试次数转死信队列
- *
  * 消费流程：
- *   1. 收到消息
- *   2. 反序列化 JSON → StockDeductedEvent
- *   3. 调用 OrderService.createOrder()（内部做幂等检查）
- *   4. 成功 → channel.basicAck（告诉MQ消息处理完了，从队列删除）
- *   5. 失败 → 抛异常 → Spring AMQP 自动重试
- *      重试超次数 → channel.basicNack(false) → 转死信队列
+ *   1. 收到消息，反序列化 JSON → StockDeductedEvent
+ *   2. 调用 OrderService.createOrder()（内部做幂等检查）
+ *   3. 成功 → channel.basicAck，消息从队列删除
+ *   4. 失败 → 只抛出异常，由 RabbitConsumerConfig 中的 RetryTemplate 负责重试
+ *             重试耗尽 → RejectAndDontRequeueRecoverer 执行 basicNack(requeue=false)
+ *                      → 触发 stock-service 中配置的死信路由 → 进入 dead.queue
+ *
+ * 注意：catch 块中不能手动调 basicNack，否则消息在第一次失败时就立刻进死信，
+ *       RetryTemplate 的重试将完全失效。
  */
 @Component
 public class StockEventConsumer {
@@ -34,11 +32,9 @@ public class StockEventConsumer {
             .registerModule(new JavaTimeModule());
 
     /**
-     * @RabbitListener 监听指定队列
-     * queues：队列名（和 stock-service 的 RabbitConfig 里一致）
-     * containerFactory：使用手动ACK的容器工厂（在配置类里定义）
+     * containerFactory 必须显式指定，确保使用配置了重试策略的自定义工厂
      */
-    @RabbitListener(queues = "stock.deducted.queue")
+    @RabbitListener(queues = "stock.deducted.queue", containerFactory = "rabbitListenerContainerFactory")
     public void handleStockDeducted(Message message, Channel channel) throws Exception {
 
         long deliveryTag = message.getMessageProperties().getDeliveryTag();
@@ -59,19 +55,18 @@ public class StockEventConsumer {
             System.out.println("[Consumer] ✓ ACK 消息 deliveryTag=" + deliveryTag);
 
         } catch (Exception e) {
-            System.err.println("[Consumer] ✗ 消费失败: " + e.getMessage());
+            System.err.println("[Consumer] ✗ 消费失败，等待重试: " + e.getMessage());
 
-            /*
-             * basicNack 参数说明：
-             *   deliveryTag：当前消息的标识
-             *   multiple=false：只拒绝这一条
-             *   requeue=false：不重新入队（交给Spring AMQP的重试机制）
-             *
-             * 因为 application.yml 配置了 retry，Spring AMQP 会自动重试。
-             * 超过 max-attempts 且 requeue-rejected=false → 进死信队列。
-             */
-            channel.basicNack(deliveryTag, false, false);
-            throw e;  // 抛出让 Spring AMQP 的重试机制感知到
+            // ❌ 不在此处调用 basicNack
+            //    原因：basicNack 会立即通知 RabbitMQ 拒绝消息，
+            //          导致消息在第一次失败时就进入死信队列，
+            //          RetryTemplate 配置的重试次数完全无效。
+            //
+            // ✅ 只抛出异常，交给 RetryTemplate 决定是否继续重试：
+            //    - 未达到 max-attempts：等待退避时间后重试本方法
+            //    - 达到 max-attempts：调用 RejectAndDontRequeueRecoverer
+            //                        → basicNack(requeue=false) → 进死信队列
+            throw e;
         }
     }
 }
